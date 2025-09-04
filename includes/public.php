@@ -59,6 +59,22 @@ function gprhi_api_get(array $params) {
   if (!empty($params['property_type'])) {
     $filters[] = 'PropertyType eq ' . $quote($params['property_type']);
   }
+  // Office/Agent/Team/Status targeting
+  if (!empty($params['office_name'])) {
+    $filters[] = 'ListOfficeName eq ' . $quote($params['office_name']);
+  }
+  if (!empty($params['office_mlsid'])) {
+    $filters[] = 'ListOfficeMlsId eq ' . $quote($params['office_mlsid']);
+  }
+  if (!empty($params['agent_mlsid'])) {
+    $filters[] = 'ListAgentMlsId eq ' . $quote($params['agent_mlsid']);
+  }
+  if (!empty($params['team_name'])) {
+    $filters[] = 'ListTeamName eq ' . $quote($params['team_name']);
+  }
+  if (!empty($params['status'])) {
+    $filters[] = 'StandardStatus eq ' . $quote($params['status']);
+  }
   $filter = implode(' and ', $filters);
 
   // OData query
@@ -111,6 +127,56 @@ function gprhi_api_get(array $params) {
 }
 
 /**
+ * Fetch a single Property by ListingKey with expanded fields for detail view.
+ *
+ * @param string $listing_key
+ * @return array{item: array}|array{item: array, error: string}
+ */
+function gprhi_api_get_by_key($listing_key) {
+  $base = defined('GPRHI_API_BASE') ? GPRHI_API_BASE : (defined('SOURCERE_API_BASE') ? SOURCERE_API_BASE : 'https://api.sourceredb.com/odata/');
+  $url = trailingslashit($base) . 'Property';
+
+  $quote = static function($value) {
+    $v = (string) $value;
+    return "'" . str_replace("'", "''", $v) . "'";
+  };
+
+  $filter = 'ListingKey eq ' . $quote($listing_key);
+  $odata = [
+    '$select' => 'ListingKey,UnparsedAddress,City,ListPrice,BedroomsTotal,BathroomsTotalInteger,PublicRemarks,YearBuilt,LivingArea,LotSizeArea,StandardStatus,PropertyType',
+    '$expand' => 'Media($select=MediaURL,Order;$orderby=Order asc)',
+    '$filter' => $filter,
+    '$top' => 1,
+  ];
+
+  $headers = [
+    'Accept'        => 'application/json',
+    'Authorization' => 'Bearer ' . gprhi_get_api_key(),
+  ];
+
+  $resp = wp_remote_get(add_query_arg($odata, $url), [
+    'headers' => $headers,
+    'timeout' => 12,
+  ]);
+
+  if (is_wp_error($resp)) {
+    error_log('GPRHI single HTTP error: ' . $resp->get_error_message());
+    return ['item' => [], 'error' => 'http'];
+  }
+
+  $code = wp_remote_retrieve_response_code($resp);
+  $body = wp_remote_retrieve_body($resp);
+  $json = json_decode($body, true);
+  if ($code !== 200 || !is_array($json)) {
+    error_log('GPRHI single bad response: ' . $code . ' body=' . substr($body, 0, 500));
+    return ['item' => [], 'error' => 'bad_response'];
+  }
+
+  $item = is_array($json['value'] ?? null) && !empty($json['value']) ? $json['value'][0] : [];
+  return ['item' => is_array($item) ? $item : []];
+}
+
+/**
  * Shortcode renderer for listings grid.
  *
  * @param array $atts
@@ -118,6 +184,67 @@ function gprhi_api_get(array $params) {
  */
 function gprhi_listings_shortcode($atts = []) {
   if (!gprhi_get_api_key()) return '<div class="source-re-error">Missing API key</div>';
+
+  // If a listing_key query param is present, render a single listing detail view
+  $requested_key = isset($_GET['listing_key']) ? sanitize_text_field(wp_unslash($_GET['listing_key'])) : '';
+  if ($requested_key !== '') {
+    $single = gprhi_api_get_by_key($requested_key);
+    if (!empty($single['error']) || empty($single['item'])) {
+      return '<div class="source-re-error">Listing not found</div>';
+    }
+
+    $i = $single['item'];
+    $id     = esc_attr($i['ListingKey'] ?? '');
+    $addr   = esc_html($i['UnparsedAddress'] ?? '');
+    $city   = esc_html($i['City'] ?? '');
+    $price  = isset($i['ListPrice']) ? number_format_i18n(floatval($i['ListPrice'])) : '';
+    $beds   = esc_html($i['BedroomsTotal'] ?? '');
+    $baths  = esc_html($i['BathroomsTotalInteger'] ?? '');
+    $yr     = esc_html($i['YearBuilt'] ?? '');
+    $area   = esc_html($i['LivingArea'] ?? '');
+    $lot    = esc_html($i['LotSizeArea'] ?? '');
+    $status = esc_html($i['StandardStatus'] ?? '');
+    $type   = esc_html($i['PropertyType'] ?? '');
+    $desc   = wp_kses_post($i['PublicRemarks'] ?? '');
+    $media  = isset($i['Media']) && is_array($i['Media']) ? $i['Media'] : [];
+
+    ob_start();
+    ?>
+    <div class="gprhi-detail">
+      <div class="gprhi-detail-header">
+        <div class="gprhi-detail-price"><?php echo $price ? '$' . $price : ''; ?></div>
+        <div class="gprhi-detail-addr"><?php echo $addr; ?><?php echo $city ? ', ' . $city : ''; ?></div>
+        <div class="gprhi-detail-specs">
+          <?php if ($beds !== ''): ?><span><?php echo $beds; ?> bd</span><?php endif; ?>
+          <?php if ($baths !== ''): ?><span><?php echo $baths; ?> ba</span><?php endif; ?>
+          <?php if ($area !== ''): ?><span><?php echo esc_html($area); ?> sqft</span><?php endif; ?>
+          <?php if ($yr !== ''): ?><span><?php echo esc_html($yr); ?></span><?php endif; ?>
+          <?php if ($status !== ''): ?><span><?php echo esc_html($status); ?></span><?php endif; ?>
+          <?php if ($type !== ''): ?><span><?php echo esc_html($type); ?></span><?php endif; ?>
+        </div>
+      </div>
+      <div class="gprhi-gallery">
+        <?php if (!empty($media)): foreach ($media as $m): $u = esc_url($m['MediaURL'] ?? ''); if (!$u) continue; ?>
+          <img src="<?php echo $u; ?>" loading="lazy" alt="<?php echo $addr ? $addr : 'Listing image'; ?>">
+        <?php endforeach; endif; ?>
+      </div>
+      <?php if ($desc): ?>
+        <div class="gprhi-desc"><?php echo $desc; ?></div>
+      <?php endif; ?>
+      <style>
+        .gprhi-detail {display:block;}
+        .gprhi-detail-header {margin-bottom:12px}
+        .gprhi-detail-price {font-weight:700;font-size:1.5rem}
+        .gprhi-detail-addr {color:#374151;margin-top:2px}
+        .gprhi-detail-specs {display:flex;gap:12px;color:#4b5563;margin-top:8px}
+        .gprhi-gallery {display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:16px 0}
+        .gprhi-gallery img {width:100%;height:220px;object-fit:cover;border-radius:8px}
+        .gprhi-desc {white-space:pre-wrap;color:#374151;line-height:1.5}
+      </style>
+    </div>
+    <?php
+    return ob_get_clean();
+  }
 
   $a = shortcode_atts([
     'city' => '',
@@ -129,6 +256,12 @@ function gprhi_listings_shortcode($atts = []) {
     'orderby' => 'APIModificationTimestamp desc',
     'limit' => 12,
     'page' => 1,
+    // Office/Agent/Team/Status filters
+    'office_name' => '',
+    'office_mlsid' => '',
+    'agent_mlsid' => '',
+    'team_name' => '',
+    'status' => '',
   ], $atts, 'gprhi_listings');
 
   $data = gprhi_api_get($a);
@@ -151,10 +284,11 @@ function gprhi_listings_shortcode($atts = []) {
       $media  = isset($i['Media']) && is_array($i['Media']) ? $i['Media'] : [];
       $first  = !empty($media) ? (isset($media[0]['MediaURL']) ? $media[0]['MediaURL'] : '') : '';
       $photo  = esc_url($first);
-      $detail = '';
+      // Link to the same page with a query param so the shortcode renders a detail view
+      $detail = esc_url(add_query_arg('listing_key', $id, get_permalink()));
     ?>
       <article class="source-re-card">
-        <a href="<?php echo $detail ?: '#'; ?>" class="source-re-thumb" <?php echo $detail ? '' : 'aria-disabled="true"'; ?>>
+        <a href="<?php echo $detail ?: '#'; ?>" class="source-re-thumb">
           <?php if ($photo): ?>
             <img src="<?php echo $photo; ?>" alt="<?php echo $addr ? $addr : 'Listing'; ?>" loading="lazy">
           <?php else: ?>
