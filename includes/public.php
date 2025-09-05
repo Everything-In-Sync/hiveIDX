@@ -85,6 +85,18 @@ function gprhi_api_get(array $params) {
   if (!empty($params['status'])) {
     $filters[] = 'StandardStatus eq ' . $quote($params['status']);
   }
+  // Exclude non-active statuses when requested (available_only)
+  if (isset($params['available_only']) && $params['available_only'] !== '') {
+    $avail_flag = strtolower((string) $params['available_only']);
+    if ($avail_flag === '1' || $avail_flag === 'true' || $avail_flag === 'yes') {
+      // Default excluded statuses; override via 'gprhi_excluded_statuses'
+      $excluded_statuses = apply_filters('gprhi_excluded_statuses', ['Closed', 'Canceled', 'Expired'], $params);
+      foreach ($excluded_statuses as $ex_status) {
+        if ($ex_status === '' || !is_string($ex_status)) { continue; }
+        $filters[] = 'StandardStatus ne ' . $quote($ex_status);
+      }
+    }
+  }
   $filter = implode(' and ', $filters);
 
   // OData query
@@ -271,9 +283,11 @@ function gprhi_listings_shortcode($atts = []) {
     'office_mlsid' => '',
     'agent_mlsid' => '',
     'team_name' => '',
-    'status' => '',
+    'status' => 'Active',
     // Rentals: '1'/'true' to include only rentals; '0'/'false' to exclude rentals
     'rental' => '',
+    // Available only: '1'/'true' excludes Closed listings
+    'available_only' => 'true',
   ], $atts, 'gprhi_listings');
 
   // Allow URL param to control pagination for on-page navigation
@@ -330,7 +344,7 @@ function gprhi_listings_shortcode($atts = []) {
   </div>
   <?php if ($pages > 1):
     $common_args = [];
-    foreach (['city','min_price','max_price','beds','baths','property_type','orderby','limit','office_name','office_mlsid','agent_mlsid','team_name','status','rental'] as $k) {
+    foreach (['city','min_price','max_price','beds','baths','property_type','orderby','limit','office_name','office_mlsid','agent_mlsid','team_name','status','rental','available_only'] as $k) {
       if (isset($a[$k]) && $a[$k] !== '') { $common_args[$k] = $a[$k]; }
     }
     $prev_url = $page > 1 ? add_query_arg(array_merge($common_args, ['gprhi_p' => $page - 1]), get_permalink()) : '';
