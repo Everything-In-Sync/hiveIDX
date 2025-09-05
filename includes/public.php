@@ -59,6 +59,16 @@ function gprhi_api_get(array $params) {
   if (!empty($params['property_type'])) {
     $filters[] = 'PropertyType eq ' . $quote($params['property_type']);
   }
+  // Rental filter using PropertyType only (safer). Override the value via 'gprhi_rental_property_type'.
+  if (isset($params['rental']) && $params['rental'] !== '') {
+    $rental_flag = strtolower((string) $params['rental']);
+    $rental_pt = apply_filters('gprhi_rental_property_type', 'Residential Lease', $params);
+    if ($rental_flag === '1' || $rental_flag === 'true' || $rental_flag === 'yes') {
+      $filters[] = 'PropertyType eq ' . $quote($rental_pt);
+    } elseif ($rental_flag === '0' || $rental_flag === 'false' || $rental_flag === 'no') {
+      $filters[] = 'PropertyType ne ' . $quote($rental_pt);
+    }
+  }
   // Office/Agent/Team/Status targeting
   if (!empty($params['office_name'])) {
     $filters[] = 'ListOfficeName eq ' . $quote($params['office_name']);
@@ -262,7 +272,15 @@ function gprhi_listings_shortcode($atts = []) {
     'agent_mlsid' => '',
     'team_name' => '',
     'status' => '',
+    // Rentals: '1'/'true' to include only rentals; '0'/'false' to exclude rentals
+    'rental' => '',
   ], $atts, 'gprhi_listings');
+
+  // Allow URL param to control pagination for on-page navigation
+  $url_page = isset($_GET['gprhi_p']) ? intval($_GET['gprhi_p']) : 0;
+  if ($url_page > 0) {
+    $a['page'] = $url_page;
+  }
 
   $data = gprhi_api_get($a);
   if (!empty($data['error'])) {
@@ -270,6 +288,10 @@ function gprhi_listings_shortcode($atts = []) {
   }
 
   $items = $data['items'];
+  $total = isset($data['total']) ? intval($data['total']) : count($items);
+  $page  = max(1, intval($a['page']));
+  $limit = max(1, intval($a['limit']));
+  $pages = max(1, (int) ceil($total / $limit));
 
   ob_start();
   ?>
@@ -306,6 +328,30 @@ function gprhi_listings_shortcode($atts = []) {
       </article>
     <?php endforeach; ?>
   </div>
+  <?php if ($pages > 1):
+    $common_args = [];
+    foreach (['city','min_price','max_price','beds','baths','property_type','orderby','limit','office_name','office_mlsid','agent_mlsid','team_name','status','rental'] as $k) {
+      if (isset($a[$k]) && $a[$k] !== '') { $common_args[$k] = $a[$k]; }
+    }
+    $prev_url = $page > 1 ? add_query_arg(array_merge($common_args, ['gprhi_p' => $page - 1]), get_permalink()) : '';
+    $next_url = $page < $pages ? add_query_arg(array_merge($common_args, ['gprhi_p' => $page + 1]), get_permalink()) : '';
+  ?>
+    <nav class="gprhi-pager">
+      <div class="gprhi-pager-left">
+        <?php if ($prev_url): ?><a href="<?php echo esc_url($prev_url); ?>">« Previous</a><?php endif; ?>
+      </div>
+      <div class="gprhi-pager-center">Page <?php echo esc_html((string)$page); ?> of <?php echo esc_html((string)$pages); ?></div>
+      <div class="gprhi-pager-right">
+        <?php if ($next_url): ?><a href="<?php echo esc_url($next_url); ?>">Next »</a><?php endif; ?>
+      </div>
+    </nav>
+    <style>
+      .gprhi-pager {display:flex;align-items:center;justify-content:space-between;margin-top:16px}
+      .gprhi-pager a {text-decoration:none;color:#2563eb}
+      .gprhi-pager a:hover {text-decoration:underline}
+      .gprhi-pager-center {color:#4b5563}
+    </style>
+  <?php endif; ?>
   <style>
     .source-re-grid {display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
     .source-re-card {border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#fff}
